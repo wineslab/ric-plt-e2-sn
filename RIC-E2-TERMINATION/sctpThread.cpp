@@ -387,6 +387,41 @@ int buildListeningPort(sctp_params_t &sctpParams) {
         }
     }
 
+    // SCTP_RTO_INITIAL, SCTP_RTO_MIN and SCTP_RTO_MAX are in ms; one left unset keeps the kernel's value.
+    // With SCTP_MAX_RETRIES they bound how long a dead E2 node keeps its association: about 5 minutes with
+    // the kernel's 60 s maximum, during which the node may already have set up again on a new one.
+    char *sctp_rto_initial = std::getenv("SCTP_RTO_INITIAL");
+    char *sctp_rto_min = std::getenv("SCTP_RTO_MIN");
+    char *sctp_rto_max = std::getenv("SCTP_RTO_MAX");
+    if (sctp_rto_initial || sctp_rto_min || sctp_rto_max) {
+        struct sctp_rtoinfo sckt_rto;
+        memset(&sckt_rto, 0, sizeof(sckt_rto));
+        sckt_rto.srto_initial = sctp_rto_initial ? atoi(sctp_rto_initial) : 0;
+        sckt_rto.srto_min = sctp_rto_min ? atoi(sctp_rto_min) : 0;
+        sckt_rto.srto_max = sctp_rto_max ? atoi(sctp_rto_max) : 0;
+        if (setsockopt(sctpParams.listenFD, IPPROTO_SCTP, SCTP_RTOINFO, &sckt_rto, sizeof(sckt_rto)) != 0) {
+            mdclog_write(MDCLOG_ERR, "Error setting SCTP_RTOINFO initial %u min %u max %u ms. %s",
+                         sckt_rto.srto_initial, sckt_rto.srto_min, sckt_rto.srto_max, strerror(errno));
+        }
+    }
+
+    // SCTP_SACK_DELAY is in ms: how long a received chunk may wait for its SACK, the per-socket
+    // net.sctp.sack_timeout. Keep it well below the E2 nodes' minimum retransmission timeout.
+    char *sctp_sack_delay = std::getenv("SCTP_SACK_DELAY");
+    if (sctp_sack_delay) {
+        struct sctp_sack_info sckt_sack;
+        memset(&sckt_sack, 0, sizeof(sckt_sack));
+        socklen_t sckt_sack_size = sizeof(sckt_sack);
+        if (getsockopt(sctpParams.listenFD, IPPROTO_SCTP, SCTP_DELAYED_SACK, &sckt_sack, &sckt_sack_size) != 0) {
+            memset(&sckt_sack, 0, sizeof(sckt_sack)); // sack_freq 0 keeps the kernel's
+        }
+        sckt_sack.sack_assoc_id = 0;
+        sckt_sack.sack_delay = atoi(sctp_sack_delay);
+        if (setsockopt(sctpParams.listenFD, IPPROTO_SCTP, SCTP_DELAYED_SACK, &sckt_sack, sizeof(sckt_sack)) != 0) {
+            mdclog_write(MDCLOG_ERR, "Error setting SCTP_DELAYED_SACK delay %u ms. %s", sckt_sack.sack_delay, strerror(errno));
+        }
+    }
+
 
     if (listen(sctpParams.listenFD, SOMAXCONN) < 0) {
 #if !(defined(UNIT_TEST) || defined(MODULE_TEST))
