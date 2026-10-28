@@ -60,9 +60,9 @@ RUN mv /opt/e2/RIC-E2-TERMINATION/CMakeLists.txt /opt/e2/ && cat /opt/e2/RIC-E2-
        --buildtype=release -DPISTACHE_USE_SSL=false -DPISTACHE_BUILD_EXAMPLES=false  -DPISTACHE_BUILD_TESTS=false \
         -DPISTACHE_BUILD_DOCS=false  --prefix=/usr/local \
     && meson compile -C build  && meson install -C build  && ldconfig \
-    && cd /opt/e2/RIC-E2-TERMINATION/3rdparty && git clone -v https://github.com/jupp0r/prometheus-cpp.git \
+    && cd /opt/e2/RIC-E2-TERMINATION/3rdparty && git clone -v -b v1.2.4 https://github.com/jupp0r/prometheus-cpp.git \
     && cd prometheus-cpp && git submodule init && git submodule update && mkdir build && cd build \
-    && cmake .. -DBUILD_SHARED_LIBS=OFF && make -j 4  && make install && ldconfig \
+    && cmake .. -DBUILD_SHARED_LIBS=OFF -DENABLE_TESTING=OFF && make -j 4  && make install && ldconfig \
     && cd /opt/e2/RIC-E2-TERMINATION/3rdparty && git clone https://github.com/jarro2783/cxxopts.git \
     && cd /opt/e2/RIC-E2-TERMINATION/3rdparty && git clone https://github.com/Tencent/rapidjson.git \
     && cd /opt/e2/RIC-E2-TERMINATION/3rdparty && git clone https://github.com/zeux/pugixml.git \
