@@ -1506,6 +1506,25 @@ void removeE2ConnectionEntryFromMap(char* enbName)
 }
 
 /**
+ * @param pdu a decoded E2AP PDU
+ * @return true for an E2 Setup Request, the only message an E2 node sends before its E2 Setup
+ */
+static bool isE2SetupRequest(E2AP_PDU_t *pdu) {
+    return pdu != nullptr && pdu->present == E2AP_PDU_PR_initiatingMessage &&
+           pdu->choice.initiatingMessage != nullptr &&
+           pdu->choice.initiatingMessage->procedureCode == ProcedureCode_id_E2setup;
+}
+
+/**
+ * @param enbName the RAN name of a connection, empty until its E2 Setup Request
+ * @return true when this E2T holds an E2 Setup for the RAN, i.e. it handles the RAN's messages
+ */
+static bool hasE2SetupState(char *enbName) {
+    struct E2NodeConnectionHandling e2NodeConnectionHandling;
+    return getE2tProcedureOngoingStatus(enbName, e2NodeConnectionHandling);
+}
+
+/**
  *
  * @param events
  * @param sctpMap
@@ -1635,6 +1654,19 @@ int receiveDataFromSctp(struct epoll_event *events,
 
             fclose(stream);
             free(printBuffer);
+        }
+
+        if (!isE2SetupRequest(pdu) && !hasE2SetupState(message.message.enodbName)) {
+            // Every handler would drop this message, and the E2 node would never learn why; closing the
+            // connection makes it start over with an E2 Setup.
+            mdclog_write(MDCLOG_WARN, "fd %d (RAN '%s') sent an E2AP message but this E2T holds no E2 Setup for it; closing the connection so the E2 node sets up again",
+                         message.peerInfo->fileDescriptor, message.peerInfo->enodbName);
+#ifndef UNIT_TEST
+            ASN_STRUCT_FREE(asn_DEF_E2AP_PDU, pdu);
+            pdu = nullptr;
+#endif
+            done = 1;
+            break;
         }
 
         switch (pdu->present) {
