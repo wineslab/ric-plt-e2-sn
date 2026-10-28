@@ -1226,7 +1226,8 @@ void handleEinprogressMessages(struct epoll_event &event,
             peerInfo->e2tInternalCounters[E2T_Internal_Counters::SCTP_ABORT_INITIATED_BY_E2NODE]->Increment();
             mdclog_write(MDCLOG_DEBUG, "Incremented SCTP_ABORT_INITIATED_BY_E2NODE Counter");
         }
-        if (sendRequestToXapp(message, RIC_SCTP_CONNECTION_FAILURE, rmrMessageBuffer) != 0) {
+        if (!isSupersededConnection(peerInfo, params->sctpMap) &&
+            sendRequestToXapp(message, RIC_SCTP_CONNECTION_FAILURE, rmrMessageBuffer) != 0) {
             mdclog_write(MDCLOG_ERR, "SCTP_CONNECTION_FAIL message failed to send to xAPP");
         }
 #endif
@@ -1275,6 +1276,11 @@ void handlepoll_error(struct epoll_event &event,
         auto *peerInfo = (ConnectedCU_t *)event.data.ptr;
         mdclog_write(MDCLOG_ERR, "epoll error, events %0x on fd %d, RAN NAME : %s",
                      event.events, peerInfo->fileDescriptor, peerInfo->enodbName);
+        bool superseded = isSupersededConnection(peerInfo, params->sctpMap);
+        if (superseded) {
+            mdclog_write(MDCLOG_WARN, "fd %d of %s was replaced by a newer E2 connection; closing it and keeping the RAN connected",
+                         peerInfo->fileDescriptor, peerInfo->enodbName);
+        }
 #if !(defined(UNIT_TEST) || defined(MODULE_TEST))
         rmrMessageBuffer.sendMessage->len = snprintf((char *)rmrMessageBuffer.sendMessage->payload, 256,
                                                      "%s|Failed SCTP Connection",
@@ -1291,14 +1297,16 @@ void handlepoll_error(struct epoll_event &event,
             peerInfo->e2tInternalCounters[E2T_Internal_Counters::SCTP_ABORT_INITIATED_BY_E2NODE]->Increment();
             mdclog_write(MDCLOG_DEBUG, "Incremented SCTP_ABORT_INITIATED_BY_E2NODE Counter");
         }
-        if (sendRequestToXapp(message, RIC_SCTP_CONNECTION_FAILURE, rmrMessageBuffer) != 0) {
+        if (!superseded && sendRequestToXapp(message, RIC_SCTP_CONNECTION_FAILURE, rmrMessageBuffer) != 0) {
             mdclog_write(MDCLOG_ERR, "SCTP_CONNECTION_FAIL message failed to send to xAPP");
         }
 #endif
         close(peerInfo->fileDescriptor);
         mdclog_write(MDCLOG_DEBUG, "Before event.data.ptr %p and data is %d", (void *)event.data.ptr, *((ConnectedCU_t *)event.data.ptr));
-        mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", peerInfo->enodbName);
-        removeE2ConnectionEntryFromMap(peerInfo->enodbName);
+        if (!superseded) {
+            mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", peerInfo->enodbName);
+            removeE2ConnectionEntryFromMap(peerInfo->enodbName);
+        }
         //params->sctpMap->erase(peerInfo->enodbName);
         cleanHashEntry((ConnectedCU_t *) event.data.ptr, params->sctpMap);
         if (event.data.ptr != nullptr)
@@ -1351,7 +1359,8 @@ void cleanHashEntry(ConnectedCU_t *val, Sctp_Map_t *m) {
             m->erase(searchBuff);
         }
 
-        if(m->find(val->enodbName)) {
+        // Only when the name still leads to this connection: a RAN that set up again is reached through the newer one.
+        if(val->enodbName[0] != '\0' && m->find(val->enodbName) == (void *)val) {
             mdclog_write(MDCLOG_DEBUG, "remove key enodbName = %s from %s at line %d", val->enodbName, __FUNCTION__, __LINE__);
             m->erase(val->enodbName);
         }
@@ -1359,6 +1368,22 @@ void cleanHashEntry(ConnectedCU_t *val, Sctp_Map_t *m) {
         val = nullptr;
         mdclog_write(MDCLOG_DEBUG, "After free");
     }
+}
+
+/**
+ * A RAN that sends a new E2 Setup takes its name over to the connection it came on, so its older
+ * connection may still be open. Tearing that one down must leave the RAN alone: no
+ * RIC_SCTP_CONNECTION_FAILURE, no change to its E2 procedure state, no change to the name entry.
+ * @param peerInfo the connection being closed
+ * @param m the map from RAN names to connections
+ * @return true when the RAN name of peerInfo now leads to a different connection
+ */
+bool isSupersededConnection(ConnectedCU_t *peerInfo, Sctp_Map_t *m) {
+    if (peerInfo == nullptr || m == nullptr || peerInfo->enodbName[0] == '\0') {
+        return false;
+    }
+    auto *owner = m->find(peerInfo->enodbName);
+    return owner != nullptr && owner != (void *)peerInfo;
 }
 
 /**
@@ -1398,8 +1423,10 @@ int sendSctpMsg(ConnectedCU_t *peerInfo, ReportingMessages_t &message, Sctp_Map_
             }
 #endif
 #ifndef UNIT_TEST
-            mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", peerInfo->enodbName);
-            removeE2ConnectionEntryFromMap(peerInfo->enodbName);
+            if (!isSupersededConnection(peerInfo, m)) {
+                mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", peerInfo->enodbName);
+                removeE2ConnectionEntryFromMap(peerInfo->enodbName);
+            }
             cleanHashEntry(peerInfo, m);
             if (peerInfo != nullptr)
             {
@@ -1650,6 +1677,11 @@ int receiveDataFromSctp(struct epoll_event *events,
         if (loglevel >= MDCLOG_INFO) {
             mdclog_write(MDCLOG_INFO, "Closed connection - descriptor = %d", message.peerInfo->fileDescriptor);
         }
+        bool superseded = isSupersededConnection(message.peerInfo, sctpMap);
+        if (superseded) {
+            mdclog_write(MDCLOG_WARN, "fd %d of %s was replaced by a newer E2 connection; closing it and keeping the RAN connected",
+                         message.peerInfo->fileDescriptor, message.peerInfo->enodbName);
+        }
         message.message.asnLength = rmrMessageBuffer.sendMessage->len =
                 snprintf((char *)rmrMessageBuffer.sendMessage->payload,
                          256,
@@ -1665,15 +1697,17 @@ int receiveDataFromSctp(struct epoll_event *events,
         }
         #endif
 #if !(defined(UNIT_TEST) || defined(MODULE_TEST))
-        if (sendRequestToXapp(message,
-                              RIC_SCTP_CONNECTION_FAILURE,
-                              rmrMessageBuffer) != 0) {
+        if (!superseded && sendRequestToXapp(message,
+                                             RIC_SCTP_CONNECTION_FAILURE,
+                                             rmrMessageBuffer) != 0) {
             mdclog_write(MDCLOG_ERR, "SCTP_CONNECTION_FAIL message failed to send to xAPP");
         }
 #endif
 
-        mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", message.peerInfo->enodbName);
-        removeE2ConnectionEntryFromMap(message.peerInfo->enodbName);
+        if (!superseded) {
+            mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", message.peerInfo->enodbName);
+            removeE2ConnectionEntryFromMap(message.peerInfo->enodbName);
+        }
         /* Closing descriptor make epoll remove it from the set of descriptors which are monitored. */
 #ifndef UNIT_TEST
         pthread_mutex_lock(&thread_lock);
@@ -3839,8 +3873,10 @@ int addToEpoll(int epoll_fd,
         }
         close(peerInfo->fileDescriptor);
         if (enodbName != nullptr) {
-            mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", enodbName);
-            removeE2ConnectionEntryFromMap(enodbName);
+            if (!isSupersededConnection(peerInfo, sctpMap)) {
+                mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", enodbName);
+                removeE2ConnectionEntryFromMap(enodbName);
+            }
             cleanHashEntry(peerInfo, sctpMap);
             if (peerInfo != nullptr)
             {
@@ -3894,8 +3930,10 @@ int modifyToEpoll(int epoll_fd,
                          strerror(errno), __func__, __LINE__);
         }
         close(peerInfo->fileDescriptor);
-        mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", enodbName);
-        removeE2ConnectionEntryFromMap(enodbName);
+        if (!isSupersededConnection(peerInfo, sctpMap)) {
+            mdclog_write(MDCLOG_DEBUG, "Erasing Entry from Map for Key %s", enodbName);
+            removeE2ConnectionEntryFromMap(enodbName);
+        }
         cleanHashEntry(peerInfo, sctpMap);
         if (peerInfo != nullptr)
         {

@@ -296,6 +296,8 @@ void handlepoll_error(struct epoll_event &event,
 
 void cleanHashEntry(ConnectedCU_t *peerInfo, Sctp_Map_t *m);
 
+bool isSupersededConnection(ConnectedCU_t *peerInfo, Sctp_Map_t *m);
+
 
 /**
  *
@@ -504,7 +506,7 @@ int fetchStreamId(ConnectedCU_t *peerInfo, ReportingMessages_t &message);
 void removeE2ConnectionEntryFromMap(char* eNBName);
 bool getE2tProcedureOngoingStatus(char *enbName, E2NodeConnectionHandling &e2NodeConnectionHandling);
 void setE2ProcedureOngoingStatus(char *enbName, E2T_Procedure_States state);
-void insertE2ProcedureOngoing(char *enbName, long &transactionID);
+void insertE2SetupProcedureOngoing(char *enbName, long &transactionID);
 E2T_Procedure_States currentE2tProcedureOngoingStatus(char *enbName);
 void printEntryPresentInMap();
 void handleE2SetupReq(ReportingMessages_t &message, RmrMessagesBuffer_t &rmrMessageBuffer, E2AP_PDU_t *pdu, long &transactionID, int streamId, Sctp_Map_t *sctpMap);

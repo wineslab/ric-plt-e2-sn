@@ -136,6 +136,74 @@ TEST(sctp, TEST4) {
     cleanHashEntry(connected_cu1,m);
 }
 
+static ConnectedCU_t *newConnection(const char *ranName) {
+    auto *peerInfo = (ConnectedCU_t *) calloc(1, sizeof(ConnectedCU_t));
+    peerInfo->fileDescriptor = negativeOne;
+    snprintf(peerInfo->enodbName, MAX_ENODB_NAME_SIZE, "%s", ranName);
+    return peerInfo;
+}
+
+TEST(sctp, TestCleanHashEntryKeepsTheNameOfANewerConnection) {
+    char ranName[] = "gnb_001_001_0000a001";
+    Sctp_Map_t *sctpMap = new Sctp_Map_t();
+    ConnectedCU_t *older = newConnection(ranName);
+    ConnectedCU_t *newer = newConnection(ranName);
+    sctpMap->setkey(ranName, newer);
+
+    ASSERT_TRUE(isSupersededConnection(older, sctpMap));
+    ASSERT_FALSE(isSupersededConnection(newer, sctpMap));
+
+    cleanHashEntry(older, sctpMap);
+    ASSERT_EQ(sctpMap->find(ranName), (void *) newer);
+
+    cleanHashEntry(newer, sctpMap);
+    ASSERT_EQ(sctpMap->find(ranName), nullptr);
+    delete sctpMap;
+}
+
+TEST(sctp, TestConnectionWithoutAnOwnerIsNotSuperseded) {
+    char ranName[] = "gnb_001_001_0000a002";
+    Sctp_Map_t *sctpMap = new Sctp_Map_t();
+    ConnectedCU_t *named = newConnection(ranName);
+    ConnectedCU_t *unnamed = newConnection("");
+
+    ASSERT_FALSE(isSupersededConnection(named, sctpMap));
+    ASSERT_FALSE(isSupersededConnection(unnamed, sctpMap));
+    ASSERT_FALSE(isSupersededConnection(nullptr, sctpMap));
+
+    free(named);
+    free(unnamed);
+    delete sctpMap;
+}
+
+TEST(sctp, TestEpollErrorOnAReplacedConnectionKeepsTheRanState) {
+    char ranName[] = "gnb_001_001_0000a003";
+    long transactionId = numberOne;
+    sctp_params_t sctp_ut_params;
+    Sctp_Map_t *sctpMap = new Sctp_Map_t();
+    sctp_ut_params.sctpMap = sctpMap;
+    ConnectedCU_t *older = newConnection(ranName);
+    ConnectedCU_t *newer = newConnection(ranName);
+    sctpMap->setkey(ranName, newer);
+    insertE2SetupProcedureOngoing(ranName, transactionId);
+    ReportingMessages_t reporting_msg;
+    RmrMessagesBuffer_t rmrmessagesbuffer;
+    struct epoll_event event {};
+    event.events = EPOLLERR;
+
+    // The E2 node set up again on newer before the old association failed.
+    event.data.ptr = (void *) older;
+    handlepoll_error(event, reporting_msg, rmrmessagesbuffer, &sctp_ut_params);
+    ASSERT_EQ(sctpMap->find(ranName), (void *) newer);
+    ASSERT_EQ(currentE2tProcedureOngoingStatus(ranName), E2T_Procedure_States::E2_SETUP_PROCEDURE_ONGOING);
+
+    event.data.ptr = (void *) newer;
+    handlepoll_error(event, reporting_msg, rmrmessagesbuffer, &sctp_ut_params);
+    ASSERT_EQ(sctpMap->find(ranName), nullptr);
+    ASSERT_EQ(currentE2tProcedureOngoingStatus(ranName), E2T_Procedure_States::E2_SETUP_PROCEDURE_NOT_INITIATED);
+    delete sctpMap;
+}
+
 TEST(sctp, TEST5) {
     sctp_params_t sctp_ut_params;
     sctp_params_t* sctp = &sctp_ut_params;
